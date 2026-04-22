@@ -156,13 +156,23 @@ mqtt_client.on_message = on_message
 mqtt_client.on_disconnect = on_disconnect
 
 def start_mqtt():
+    import eventlet
+    eventlet.monkey_patch()  # ← CRÍTICO: patch para funcionar com eventlet
+    
     try:
         print(f"→ Tentando conectar ao MQTT broker: {MQTT_BROKER}:{MQTT_PORT}")
         print(f"→ Usuário MQTT: {MQTT_USER}")
+        print("→ Chamando mqtt_client.connect()...")
+        
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        print("→ Connect() executado, iniciando loop...")
-        mqtt_client.loop_start()  # ← MUDOU: loop_start() ao invés de loop_forever()
-        print("→ Loop MQTT iniciado em background")
+        
+        print("→ Connect() executado com sucesso!")
+        print("→ Iniciando loop MQTT...")
+        
+        mqtt_client.loop_start()
+        
+        print("→ Loop MQTT iniciado em background ✓")
+        
     except Exception as e:
         print(f"✗ Erro MQTT: {e}")
         import traceback
