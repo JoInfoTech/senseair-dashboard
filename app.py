@@ -690,13 +690,15 @@ def get_status_log():
 def health():
     return jsonify({'status': 'ok', 'mqtt_connected': current_data['connected']})
 
+# Inicia thread MQTT (sempre, não apenas em __main__)
+print("\n" + "="*60)
+print("      SenseAir-001 - Web Dashboard")
+print("="*60 + "\n")
+
+mqtt_thread = threading.Thread(target=start_mqtt, daemon=True)
+mqtt_thread.start()
+print("✓ Thread MQTT iniciada")
+
 if __name__ == '__main__':
-    print("\n" + "="*60)
-    print("      SenseAir-001 - Web Dashboard (Render.com)")
-    print("="*60 + "\n")
-    
-    mqtt_thread = threading.Thread(target=start_mqtt, daemon=True)
-    mqtt_thread.start()
-    
     port = int(os.environ.get('PORT', 10000))
     socketio.run(app, host='0.0.0.0', port=port)
