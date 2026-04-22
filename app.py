@@ -157,10 +157,15 @@ mqtt_client.on_disconnect = on_disconnect
 
 def start_mqtt():
     try:
+        print(f"→ Tentando conectar ao MQTT broker: {MQTT_BROKER}:{MQTT_PORT}")
+        print(f"→ Usuário MQTT: {MQTT_USER}")
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        print("→ Connect() executado, iniciando loop...")
         mqtt_client.loop_forever()
     except Exception as e:
         print(f"✗ Erro MQTT: {e}")
+        import traceback
+        traceback.print_exc()
 
 @socketio.on('connect')
 def handle_connect():
