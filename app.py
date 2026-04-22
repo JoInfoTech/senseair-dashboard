@@ -161,7 +161,8 @@ def start_mqtt():
         print(f"→ Usuário MQTT: {MQTT_USER}")
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         print("→ Connect() executado, iniciando loop...")
-        mqtt_client.loop_forever()
+        mqtt_client.loop_start()  # ← MUDOU: loop_start() ao invés de loop_forever()
+        print("→ Loop MQTT iniciado em background")
     except Exception as e:
         print(f"✗ Erro MQTT: {e}")
         import traceback
