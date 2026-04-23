@@ -121,8 +121,10 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe(TOPIC_STATUS)
         client.subscribe(TOPIC_KEEPALIVE)
         
-        # Emite para TODOS os clientes conectados
-        socketio.emit('mqtt_status', {'connected': True}, broadcast=True)
+        # Emite para TODOS os clientes (broadcast)
+        socketio.emit('mqtt_status', {'connected': True}, broadcast=True, namespace='/')
+        
+        print(f"→ Status MQTT atualizado: connected={current_data['connected']}")
         
         print("→ Inscrito nos tópicos MQTT com sucesso")
     else:
@@ -185,6 +187,8 @@ def start_mqtt():
 @socketio.on('connect')
 def handle_connect():
     print("✓ Cliente WebSocket conectado")
+    print(f"  Status MQTT atual: {current_data['connected']}")
+    # Envia o status MQTT atual para o cliente que acabou de conectar
     socketio.emit('mqtt_status', {'connected': current_data['connected']})
 
 @socketio.on('disconnect')
