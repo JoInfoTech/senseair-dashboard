@@ -159,8 +159,10 @@ mqtt_client.on_message = on_message
 mqtt_client.on_disconnect = on_disconnect
 
 def start_mqtt():
-    import eventlet
-    eventlet.monkey_patch()  # ← CRÍTICO: patch para funcionar com eventlet
+    import time
+    
+    # Aguarda 2 segundos para o servidor estabilizar
+    time.sleep(2)
     
     try:
         print(f"→ Tentando conectar ao MQTT broker: {MQTT_BROKER}:{MQTT_PORT}")
@@ -186,10 +188,8 @@ def handle_connect():
     print("✓ Cliente WebSocket conectado")
     mqtt_status = current_data.get('connected', False)
     print(f"  → Enviando status MQTT para cliente: {mqtt_status}")
-    socketio.emit('mqtt_status', {'connected': mqtt_status})
+    socketio.emit('mqtt_status', {'connected': mqtt_status})  # ← CORRIGIDO!
     
-    # Envia o status MQTT atual para o cliente que acabou de conectar
-    socketio.emit('mqtt_status', {'connected': mqtt_connected})
 @socketio.on('disconnect')
 def handle_disconnect():
     print("✗ Cliente WebSocket desconectado")
