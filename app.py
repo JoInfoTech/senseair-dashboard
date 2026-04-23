@@ -120,11 +120,15 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe(TOPIC_DATA)
         client.subscribe(TOPIC_STATUS)
         client.subscribe(TOPIC_KEEPALIVE)
-        socketio.emit('mqtt_status', {'connected': True})
+        
+        # Emite para TODOS os clientes conectados
+        socketio.emit('mqtt_status', {'connected': True}, broadcast=True)
+        
+        print("→ Inscrito nos tópicos MQTT com sucesso")
     else:
         print(f"✗ Falha na conexão MQTT: {rc}")
         current_data['connected'] = False
-        socketio.emit('mqtt_status', {'connected': False})
+        socketio.emit('mqtt_status', {'connected': False}, broadcast=True)
 
 def on_message(client, userdata, msg):
     topic = msg.topic
