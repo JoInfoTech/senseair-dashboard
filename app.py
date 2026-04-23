@@ -706,7 +706,26 @@ def get_status_log():
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'mqtt_connected': current_data['connected']})
-
+@app.route('/api/mqtt_reconnect')
+def mqtt_reconnect():
+    """Força atualização do status MQTT"""
+    try:
+        # Verifica se o client MQTT está conectado
+        is_connected = mqtt_client.is_connected()
+        current_data['connected'] = is_connected
+        
+        # Notifica todos os clientes
+        socketio.emit('mqtt_status', {'connected': is_connected})
+        
+        return jsonify({
+            'mqtt_connected': is_connected,
+            'message': 'Status atualizado'
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'mqtt_connected': False
+        }), 500
 # Inicia thread MQTT (sempre, não apenas em __main__)
 print("\n" + "="*60)
 print("      SenseAir-001 - Web Dashboard")
