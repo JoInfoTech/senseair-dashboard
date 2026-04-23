@@ -181,7 +181,7 @@ def start_mqtt():
         import traceback
         traceback.print_exc()
 
-@@socketio.on('connect')
+@socketio.on('connect')
 def handle_connect():
     print("✓ Cliente WebSocket conectado")
     mqtt_status = current_data.get('connected', False)
