@@ -7,7 +7,7 @@ from datetime import datetime
 import threading
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'senseair-secret-key')
@@ -47,15 +47,27 @@ class StatusLog(Base):
     timestamp = Column(DateTime, default=datetime.now)
     message = Column(String)
 
-# Cria engine e sessão
+# Cria engine e sessão com configurações para multi-threading
 if DATABASE_URL:
-    engine = create_engine(DATABASE_URL)
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=10,
+        max_overflow=20,
+        echo=False
+    )
     Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
+    
+    # Usa scoped_session para thread-safety
+    session_factory = sessionmaker(bind=engine)
+    Session = scoped_session(session_factory)
+    
     print("✓ Banco de dados PostgreSQL conectado")
 else:
     print("⚠️ DATABASE_URL não configurada")
     engine = None
+    Session = None
 
 current_data = {
     'temperature': 0,
@@ -69,42 +81,49 @@ current_data = {
 
 def save_sensor_data(data):
     try:
-        if 'data' in data and engine:
+        if 'data' in data and engine and Session:
             sensor_data = data['data']
             
+            # Usa scoped_session que é thread-safe
             session = Session()
-            record = SensorData(
-                counter=data.get('counter', 0),
-                temperature=sensor_data.get('temperature', 0),
-                humidity=sensor_data.get('humidity', 0),
-                eco2=sensor_data.get('eco2', 0),
-                tvoc=sensor_data.get('tvoc', 0)
-            )
-            session.add(record)
-            session.commit()
-            session.close()
-            
-            current_data['temperature'] = sensor_data.get('temperature', 0)
-            current_data['humidity'] = sensor_data.get('humidity', 0)
-            current_data['eco2'] = sensor_data.get('eco2', 0)
-            current_data['tvoc'] = sensor_data.get('tvoc', 0)
-            current_data['last_update'] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-            
-            socketio.emit('sensor_update', current_data)
-            
-            print(f"✓ Dados salvos: Temp={sensor_data.get('temperature')}°C, eCO2={sensor_data.get('eco2')}ppm")
-            
+            try:
+                record = SensorData(
+                    counter=data.get('counter', 0),
+                    temperature=sensor_data.get('temperature', 0),
+                    humidity=sensor_data.get('humidity', 0),
+                    eco2=sensor_data.get('eco2', 0),
+                    tvoc=sensor_data.get('tvoc', 0)
+                )
+                session.add(record)
+                session.commit()
+                
+                current_data['temperature'] = sensor_data.get('temperature', 0)
+                current_data['humidity'] = sensor_data.get('humidity', 0)
+                current_data['eco2'] = sensor_data.get('eco2', 0)
+                current_data['tvoc'] = sensor_data.get('tvoc', 0)
+                current_data['last_update'] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+                
+                socketio.emit('sensor_update', current_data)
+                
+                print(f"✓ Dados salvos: Temp={sensor_data.get('temperature')}°C, eCO2={sensor_data.get('eco2')}ppm")
+            finally:
+                Session.remove()  # Remove a sessão do escopo atual
+                
     except Exception as e:
         print(f"✗ Erro ao salvar dados: {e}")
+        import traceback
+        traceback.print_exc()
 
 def save_status(status_msg):
     try:
-        if engine:
+        if engine and Session:
             session = Session()
-            log = StatusLog(message=status_msg)
-            session.add(log)
-            session.commit()
-            session.close()
+            try:
+                log = StatusLog(message=status_msg)
+                session.add(log)
+                session.commit()
+            finally:
+                Session.remove()
         
         current_data['status'] = status_msg
         socketio.emit('status_update', {'status': status_msg, 'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
@@ -112,6 +131,8 @@ def save_status(status_msg):
         print(f"✓ Status: {status_msg}")
     except Exception as e:
         print(f"✗ Erro ao salvar status: {e}")
+        import traceback
+        traceback.print_exc()
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -187,7 +208,7 @@ def handle_connect():
     print("✓ Cliente WebSocket conectado")
     mqtt_status = current_data.get('connected', False)
     print(f"  → Enviando status MQTT para cliente: {mqtt_status}")
-    socketio.emit('mqtt_status', {'connected': mqtt_status})  # ← CORRIGIDO!
+    socketio.emit('mqtt_status', {'connected': mqtt_status})
     
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -224,28 +245,27 @@ def index():
     .connection-status {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       padding: 8px 16px;
       border-radius: 20px;
+      font-size: 0.9em;
       font-weight: 600;
-      margin-top: 10px;
     }
-    .connection-status.online { background: #d1fae5; color: #065f46; }
-    .connection-status.offline { background: #fee2e2; color: #991b1b; }
+    .connection-status.online { background: #d4edda; color: #155724; }
+    .connection-status.offline { background: #f8d7da; color: #721c24; }
     .pulse {
-      display: inline-block;
       width: 10px;
       height: 10px;
       border-radius: 50%;
       animation: pulse 2s infinite;
     }
-    .pulse.online { background: #10b981; }
-    .pulse.offline { background: #ef4444; }
+    .pulse.online { background: #28a745; }
+    .pulse.offline { background: #dc3545; }
     @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(0.9); }
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
     }
-    .metrics-grid {
+    .metrics {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 20px;
@@ -256,100 +276,67 @@ def index():
       padding: 25px;
       border-radius: 15px;
       box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-      position: relative;
-      overflow: hidden;
+      text-align: center;
+      transition: transform 0.2s;
     }
-    .metric-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 5px;
-      height: 100%;
-    }
-    .metric-card.temp::before { background: #10b981; }
-    .metric-card.humidity::before { background: #3b82f6; }
-    .metric-card.eco2::before { background: #ef4444; }
-    .metric-card.tvoc::before { background: #f59e0b; }
-    .metric-label {
-      color: #666;
-      font-size: 0.9em;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 10px;
-    }
-    .metric-value {
-      font-size: 3em;
-      font-weight: bold;
-      color: #333;
-      line-height: 1;
-    }
-    .metric-unit {
-      font-size: 0.4em;
-      color: #999;
-      font-weight: normal;
-    }
-    .metric-icon {
-      position: absolute;
-      right: 20px;
-      top: 20px;
-      font-size: 3em;
-      opacity: 0.1;
-    }
-    .charts-section {
-      background: white;
-      padding: 30px;
-      border-radius: 15px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-      margin-bottom: 20px;
-    }
-    .charts-section h2 { color: #667eea; margin-bottom: 20px; font-size: 1.5em; }
-    .charts-grid {
+    .metric-card:hover { transform: translateY(-5px); }
+    .metric-icon { font-size: 3em; margin-bottom: 10px; }
+    .metric-label { color: #666; font-size: 0.9em; margin-bottom: 5px; }
+    .metric-value { font-size: 2.5em; font-weight: bold; color: #667eea; }
+    .metric-unit { font-size: 0.5em; color: #999; }
+    .charts {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-      gap: 30px;
-    }
-    .chart-container { position: relative; height: 300px; }
-    .info-section {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
       gap: 20px;
+      margin-bottom: 20px;
     }
-    .info-card {
+    .chart-card {
       background: white;
-      padding: 25px;
+      padding: 20px;
       border-radius: 15px;
       box-shadow: 0 5px 15px rgba(0,0,0,0.1);
     }
-    .info-card h3 { color: #667eea; margin-bottom: 15px; font-size: 1.2em; }
+    .chart-card h3 { color: #667eea; margin-bottom: 15px; }
+    .info-panel {
+      background: white;
+      padding: 20px;
+      border-radius: 15px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    .info-panel h3 { color: #667eea; margin-bottom: 15px; }
+    .last-update {
+      text-align: center;
+      color: #666;
+      font-size: 0.9em;
+      margin-top: 10px;
+    }
     .stat-row {
       display: flex;
       justify-content: space-between;
       padding: 10px 0;
-      border-bottom: 1px solid #f0f0f0;
+      border-bottom: 1px solid #eee;
     }
     .stat-row:last-child { border-bottom: none; }
-    .stat-label { color: #666; font-weight: 500; }
-    .stat-value { color: #333; font-weight: bold; }
+    .stat-label { color: #666; }
+    .stat-value { font-weight: bold; color: #667eea; }
     .log-entry {
-      padding: 10px;
-      background: #f9fafb;
-      border-radius: 8px;
-      margin-bottom: 8px;
-      font-size: 0.9em;
-      border-left: 3px solid #667eea;
+      padding: 8px;
+      margin-bottom: 5px;
+      background: #f8f9fa;
+      border-radius: 5px;
+      font-size: 0.85em;
+      display: flex;
+      gap: 10px;
     }
-    .log-time { color: #999; font-size: 0.85em; }
-    .last-update {
-      text-align: center;
-      color: #666;
-      margin-top: 10px;
-      font-size: 0.9em;
+    .log-time {
+      color: #667eea;
+      font-weight: 600;
+      white-space: nowrap;
     }
     @media (max-width: 768px) {
-      .charts-grid { grid-template-columns: 1fr; }
-      .header h1 { font-size: 1.8em; }
-      .metric-value { font-size: 2em; }
+      .metrics { grid-template-columns: 1fr; }
+      .charts { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -357,69 +344,67 @@ def index():
   <div class="container">
     <div class="header">
       <h1>🌬️ SenseAir-001 Dashboard</h1>
-      <p>Monitoramento de Qualidade do Ar em Tempo Real</p>
-      <div class="connection-status offline" id="connectionStatus">
+      <p style="color: #666; margin-bottom: 15px;">Monitoramento de Qualidade do Ar em Tempo Real</p>
+      <div id="connectionStatus" class="connection-status offline">
         <span class="pulse offline"></span>
-        <span>Conectando...</span>
+        <span>MQTT Desconectado</span>
       </div>
-      <div class="last-update">
-        Última atualização: <strong id="lastUpdate">-</strong>
-      </div>
+      <div class="last-update">Última atualização: <span id="lastUpdate">-</span></div>
     </div>
 
-    <div class="metrics-grid">
-      <div class="metric-card temp">
+    <div class="metrics">
+      <div class="metric-card">
         <div class="metric-icon">🌡️</div>
         <div class="metric-label">Temperatura</div>
-        <div class="metric-value">
-          <span id="tempValue">0.0</span>
-          <span class="metric-unit">°C</span>
-        </div>
+        <div class="metric-value"><span id="temperatureValue">0.0</span><span class="metric-unit">°C</span></div>
       </div>
-      <div class="metric-card humidity">
+      <div class="metric-card">
         <div class="metric-icon">💧</div>
         <div class="metric-label">Umidade</div>
-        <div class="metric-value">
-          <span id="humidityValue">0.0</span>
-          <span class="metric-unit">%</span>
-        </div>
+        <div class="metric-value"><span id="humidityValue">0.0</span><span class="metric-unit">%</span></div>
       </div>
-      <div class="metric-card eco2">
+      <div class="metric-card">
         <div class="metric-icon">🏭</div>
-        <div class="metric-label">eCO2</div>
-        <div class="metric-value">
-          <span id="eco2Value">0</span>
-          <span class="metric-unit">ppm</span>
-        </div>
+        <div class="metric-label">eCO₂</div>
+        <div class="metric-value"><span id="eco2Value">0</span><span class="metric-unit">ppm</span></div>
       </div>
-      <div class="metric-card tvoc">
+      <div class="metric-card">
         <div class="metric-icon">💨</div>
         <div class="metric-label">TVOC</div>
-        <div class="metric-value">
-          <span id="tvocValue">0</span>
-          <span class="metric-unit">ppb</span>
-        </div>
+        <div class="metric-value"><span id="tvocValue">0</span><span class="metric-unit">ppb</span></div>
       </div>
     </div>
 
-    <div class="charts-section">
-      <h2>📊 Gráficos Históricos (Últimas 50 Leituras)</h2>
-      <div class="charts-grid">
-        <div class="chart-container"><canvas id="eco2Chart"></canvas></div>
-        <div class="chart-container"><canvas id="tvocChart"></canvas></div>
-        <div class="chart-container"><canvas id="tempChart"></canvas></div>
-        <div class="chart-container"><canvas id="humidityChart"></canvas></div>
+    <div class="charts">
+      <div class="chart-card">
+        <h3>📈 eCO₂ (ppm)</h3>
+        <canvas id="eco2Chart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>📈 TVOC (ppb)</h3>
+        <canvas id="tvocChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>🌡️ Temperatura (°C)</h3>
+        <canvas id="tempChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>💧 Umidade (%)</h3>
+        <canvas id="humidityChart"></canvas>
       </div>
     </div>
 
-    <div class="info-section">
-      <div class="info-card">
-        <h3>📈 Estatísticas</h3>
-        <div id="statistics"><p style="text-align: center; color: #999;">Carregando...</p></div>
+    <div class="info-panel">
+      <h3>📊 Estatísticas</h3>
+      <div id="statistics">
+        <p style="text-align: center; color: #999;">Carregando...</p>
       </div>
-      <div class="info-card">
-        <h3>📋 Log de Status</h3>
-        <div id="statusLog"><p style="text-align: center; color: #999;">Carregando...</p></div>
+    </div>
+
+    <div class="info-panel">
+      <h3>📋 Log de Status</h3>
+      <div id="statusLog">
+        <p style="text-align: center; color: #999;">Carregando...</p>
       </div>
     </div>
   </div>
@@ -429,72 +414,6 @@ def index():
     
     socket.on('connect', () => {
       console.log('✓ WebSocket conectado');
-    });
-    
-    socket.on('disconnect', () => {
-      const statusEl = document.getElementById('connectionStatus');
-      statusEl.className = 'connection-status offline';
-      statusEl.innerHTML = '<span class="pulse offline"></span><span>Desconectado</span>';
-    });
-
-    const chartConfig = {
-      type: 'line',
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: { type: 'category', ticks: { maxRotation: 45, minRotation: 45 } },
-          y: { beginAtZero: true }
-        },
-        plugins: { legend: { display: false } },
-        animation: { duration: 750 }
-      }
-    };
-
-    const eco2Chart = new Chart(document.getElementById('eco2Chart'), {
-      ...chartConfig,
-      data: {
-        labels: [],
-        datasets: [{ label: 'eCO2 (ppm)', data: [], borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', tension: 0.4, fill: true }]
-      }
-    });
-
-    const tvocChart = new Chart(document.getElementById('tvocChart'), {
-      ...chartConfig,
-      data: {
-        labels: [],
-        datasets: [{ label: 'TVOC (ppb)', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.1)', tension: 0.4, fill: true }]
-      }
-    });
-
-    const tempChart = new Chart(document.getElementById('tempChart'), {
-      ...chartConfig,
-      data: {
-        labels: [],
-        datasets: [{ label: 'Temperatura (°C)', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.4, fill: true }]
-      }
-    });
-
-    const humidityChart = new Chart(document.getElementById('humidityChart'), {
-      ...chartConfig,
-      data: {
-        labels: [],
-        datasets: [{ label: 'Umidade (%)', data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.4, fill: true }]
-      }
-    });
-
-    socket.on('sensor_update', (data) => {
-      document.getElementById('tempValue').textContent = parseFloat(data.temperature).toFixed(1);
-      document.getElementById('humidityValue').textContent = parseFloat(data.humidity).toFixed(1);
-      document.getElementById('eco2Value').textContent = data.eco2;
-      document.getElementById('tvocValue').textContent = data.tvoc;
-      document.getElementById('lastUpdate').textContent = data.last_update || '-';
-      loadHistory();
-      loadStatistics();
-    });
-
-    socket.on('status_update', (data) => { 
-      loadStatusLog(); 
     });
 
     socket.on('mqtt_status', (data) => {
@@ -508,11 +427,101 @@ def index():
       }
     });
 
+    socket.on('sensor_update', (data) => {
+      document.getElementById('temperatureValue').textContent = parseFloat(data.temperature).toFixed(1);
+      document.getElementById('humidityValue').textContent = parseFloat(data.humidity).toFixed(1);
+      document.getElementById('eco2Value').textContent = data.eco2;
+      document.getElementById('tvocValue').textContent = data.tvoc;
+      document.getElementById('lastUpdate').textContent = data.last_update || '-';
+      loadHistory();
+      loadStatistics();
+    });
+
+    socket.on('status_update', (data) => {
+      loadStatusLog();
+    });
+
+    const chartOptions = {
+      responsive: true,
+      maintainAspectRatio: true,
+      scales: {
+        y: { beginAtZero: false },
+        x: { display: true }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    };
+
+    const eco2Chart = new Chart(document.getElementById('eco2Chart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'eCO₂',
+          data: [],
+          borderColor: '#667eea',
+          backgroundColor: 'rgba(102, 126, 234, 0.1)',
+          tension: 0.4,
+          fill: true
+        }]
+      },
+      options: chartOptions
+    });
+
+    const tvocChart = new Chart(document.getElementById('tvocChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'TVOC',
+          data: [],
+          borderColor: '#764ba2',
+          backgroundColor: 'rgba(118, 75, 162, 0.1)',
+          tension: 0.4,
+          fill: true
+        }]
+      },
+      options: chartOptions
+    });
+
+    const tempChart = new Chart(document.getElementById('tempChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'Temperatura',
+          data: [],
+          borderColor: '#f093fb',
+          backgroundColor: 'rgba(240, 147, 251, 0.1)',
+          tension: 0.4,
+          fill: true
+        }]
+      },
+      options: chartOptions
+    });
+
+    const humidityChart = new Chart(document.getElementById('humidityChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'Umidade',
+          data: [],
+          borderColor: '#4facfe',
+          backgroundColor: 'rgba(79, 172, 254, 0.1)',
+          tension: 0.4,
+          fill: true
+        }]
+      },
+      options: chartOptions
+    });
+
     async function loadCurrent() {
       try {
         const res = await fetch('/api/current');
         const data = await res.json();
-        document.getElementById('tempValue').textContent = parseFloat(data.temperature).toFixed(1);
+        document.getElementById('temperatureValue').textContent = parseFloat(data.temperature).toFixed(1);
         document.getElementById('humidityValue').textContent = parseFloat(data.humidity).toFixed(1);
         document.getElementById('eco2Value').textContent = data.eco2;
         document.getElementById('tvocValue').textContent = data.tvoc;
@@ -617,95 +626,112 @@ def get_current_data():
 @app.route('/api/history')
 def get_history():
     try:
-        if not engine:
+        if not engine or not Session:
             return jsonify({'timestamps': [], 'temperature': [], 'humidity': [], 'eco2': [], 'tvoc': []})
         
         session = Session()
-        records = session.query(SensorData).order_by(SensorData.timestamp.desc()).limit(50).all()
-        session.close()
-        
-        if not records:
-            return jsonify({'timestamps': [], 'temperature': [], 'humidity': [], 'eco2': [], 'tvoc': []})
-        
-        records.reverse()
-        
-        history = {
-            'timestamps': [r.timestamp.strftime('%Y-%m-%d %H:%M:%S') for r in records],
-            'temperature': [r.temperature for r in records],
-            'humidity': [r.humidity for r in records],
-            'eco2': [r.eco2 for r in records],
-            'tvoc': [r.tvoc for r in records]
-        }
-        
-        return jsonify(history)
+        try:
+            records = session.query(SensorData).order_by(SensorData.timestamp.desc()).limit(50).all()
+            
+            if not records:
+                return jsonify({'timestamps': [], 'temperature': [], 'humidity': [], 'eco2': [], 'tvoc': []})
+            
+            records.reverse()
+            
+            history = {
+                'timestamps': [r.timestamp.strftime('%Y-%m-%d %H:%M:%S') for r in records],
+                'temperature': [r.temperature for r in records],
+                'humidity': [r.humidity for r in records],
+                'eco2': [r.eco2 for r in records],
+                'tvoc': [r.tvoc for r in records]
+            }
+            
+            return jsonify(history)
+        finally:
+            Session.remove()
+            
     except Exception as e:
+        print(f"✗ Erro em /api/history: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/statistics')
 def get_statistics():
     try:
-        if not engine:
+        if not engine or not Session:
             return jsonify({'error': 'Sem dados'}), 404
         
         session = Session()
-        records = session.query(SensorData).all()
-        session.close()
-        
-        if not records:
-            return jsonify({'error': 'Sem dados'}), 404
-        
-        temps = [r.temperature for r in records]
-        hums = [r.humidity for r in records]
-        eco2s = [r.eco2 for r in records]
-        tvocs = [r.tvoc for r in records]
-        
-        stats = {
-            'total_records': len(records),
-            'first_record': records[0].timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            'last_record': records[-1].timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            'averages': {
-                'temperature': round(sum(temps)/len(temps), 1),
-                'humidity': round(sum(hums)/len(hums), 1),
-                'eco2': round(sum(eco2s)/len(eco2s), 0),
-                'tvoc': round(sum(tvocs)/len(tvocs), 0)
-            },
-            'maximums': {
-                'temperature': round(max(temps), 1),
-                'humidity': round(max(hums), 1),
-                'eco2': int(max(eco2s)),
-                'tvoc': int(max(tvocs))
-            },
-            'minimums': {
-                'temperature': round(min(temps), 1),
-                'humidity': round(min(hums), 1),
-                'eco2': int(min(eco2s)),
-                'tvoc': int(min(tvocs))
+        try:
+            records = session.query(SensorData).all()
+            
+            if not records:
+                return jsonify({'error': 'Sem dados'}), 404
+            
+            temps = [r.temperature for r in records]
+            hums = [r.humidity for r in records]
+            eco2s = [r.eco2 for r in records]
+            tvocs = [r.tvoc for r in records]
+            
+            stats = {
+                'total_records': len(records),
+                'first_record': records[0].timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                'last_record': records[-1].timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                'averages': {
+                    'temperature': round(sum(temps)/len(temps), 1),
+                    'humidity': round(sum(hums)/len(hums), 1),
+                    'eco2': round(sum(eco2s)/len(eco2s), 0),
+                    'tvoc': round(sum(tvocs)/len(tvocs), 0)
+                },
+                'maximums': {
+                    'temperature': round(max(temps), 1),
+                    'humidity': round(max(hums), 1),
+                    'eco2': int(max(eco2s)),
+                    'tvoc': int(max(tvocs))
+                },
+                'minimums': {
+                    'temperature': round(min(temps), 1),
+                    'humidity': round(min(hums), 1),
+                    'eco2': int(min(eco2s)),
+                    'tvoc': int(min(tvocs))
+                }
             }
-        }
-        
-        return jsonify(stats)
+            
+            return jsonify(stats)
+        finally:
+            Session.remove()
+            
     except Exception as e:
+        print(f"✗ Erro em /api/statistics: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/status_log')
 def get_status_log():
     try:
-        if not engine:
+        if not engine or not Session:
             return jsonify({'log': []})
         
         session = Session()
-        logs = session.query(StatusLog).order_by(StatusLog.timestamp.desc()).limit(20).all()
-        session.close()
-        
-        log_lines = [f"[{log.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {log.message}" for log in logs]
-        
-        return jsonify({'log': log_lines})
+        try:
+            logs = session.query(StatusLog).order_by(StatusLog.timestamp.desc()).limit(20).all()
+            log_lines = [f"[{log.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {log.message}" for log in logs]
+            return jsonify({'log': log_lines})
+        finally:
+            Session.remove()
+            
     except Exception as e:
+        print(f"✗ Erro em /api/status_log: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e), 'log': []}), 500
 
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'mqtt_connected': current_data['connected']})
+
 @app.route('/api/mqtt_reconnect')
 def mqtt_reconnect():
     """Força atualização do status MQTT"""
@@ -726,6 +752,7 @@ def mqtt_reconnect():
             'error': str(e),
             'mqtt_connected': False
         }), 500
+
 # Inicia thread MQTT (sempre, não apenas em __main__)
 print("\n" + "="*60)
 print("      SenseAir-001 - Web Dashboard")
