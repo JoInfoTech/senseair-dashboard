@@ -121,16 +121,13 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe(TOPIC_STATUS)
         client.subscribe(TOPIC_KEEPALIVE)
         
-        # Emite para TODOS os clientes (broadcast)
+        # Emite para TODOS os clientes conectados
+        print("  → Notificando clientes: MQTT conectado")
         socketio.emit('mqtt_status', {'connected': True}, broadcast=True, namespace='/')
-        
-        print(f"→ Status MQTT atualizado: connected={current_data['connected']}")
-        
-        print("→ Inscrito nos tópicos MQTT com sucesso")
     else:
         print(f"✗ Falha na conexão MQTT: {rc}")
         current_data['connected'] = False
-        socketio.emit('mqtt_status', {'connected': False}, broadcast=True)
+        socketio.emit('mqtt_status', {'connected': False}, broadcast=True, namespace='/')
 
 def on_message(client, userdata, msg):
     topic = msg.topic
@@ -187,10 +184,11 @@ def start_mqtt():
 @socketio.on('connect')
 def handle_connect():
     print("✓ Cliente WebSocket conectado")
-    print(f"  Status MQTT atual: {current_data['connected']}")
+    mqtt_connected = current_data.get('connected', False)
+    print(f"  → Enviando status MQTT: {mqtt_connected}")
+    
     # Envia o status MQTT atual para o cliente que acabou de conectar
-    socketio.emit('mqtt_status', {'connected': current_data['connected']})
-
+    socketio.emit('mqtt_status', {'connected': mqtt_connected})
 @socketio.on('disconnect')
 def handle_disconnect():
     print("✗ Cliente WebSocket desconectado")
